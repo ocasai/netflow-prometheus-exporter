@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
+        "fmt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+        "strings"
 )
 
 const netflowMinPacketSize int = 24
@@ -31,6 +33,7 @@ var flowGauge = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help:      "Number of flows seen",
 })
 
+/*
 var protocolPacketCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: metricsNamespace,
 	Name:      "protocol_packets",
@@ -42,6 +45,20 @@ var protocolByteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name:      "protocol_bytes",
 	Help:      "Number of bytes per protocol",
 }, []string{"protocol", "inInterface", "inPort", "outInterface", "outPort"})
+*/
+
+// TODO packets
+var receiveByteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Namespace: metricsNamespace,
+	Name:      "receive_bytes_total",
+	Help:      "Number of bytes received per IP",
+}, []string{"ip","collector"})
+
+var transmitByteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Namespace: metricsNamespace,
+	Name:      "transmit_bytes_total",
+	Help:      "Number of bytes sent per IP",
+}, []string{"ip","collector"})
 
 // https://www.plixer.com/support/netflow-v5/
 type Flow struct {
@@ -161,7 +178,7 @@ func listen(address string, debug bool) {
 	}
 	buffer := make([]byte, 64*1024) // Max UDP packet size
 	for {
-		n, _, err := connection.ReadFrom(buffer)
+		n, addr, err := connection.ReadFrom(buffer)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -183,28 +200,63 @@ func listen(address string, debug bool) {
 		for i := 0; i < int(flow.recordCount); i++ {
 			record := readRecord(buf)
 			protocol := protocolToString(record.ipProtocol)
+			collector,_,_ := net.SplitHostPort(addr.String())
+			/* We aren't using these
 			inInterface := strconv.Itoa(int(record.snmpInput))
 			outInterface := strconv.Itoa(int(record.snmpOutput))
 			inPort := strconv.Itoa(int(record.sourcePort))
 			outPort := strconv.Itoa(int(record.destPort))
 			protocolPacketCounter.WithLabelValues(protocol, inInterface, inPort, outInterface, outPort).Add(float64(record.packetCount))
 			protocolByteCounter.WithLabelValues(protocol, inInterface, inPort, outInterface, outPort).Add(float64(record.byteCount))
+			*/
+			for _,net := range monitorNetworks {
+				if net.Contains(record.destIP) {
+					receiveByteCounter.WithLabelValues(record.destIP.String(),collector).Add(float64(record.byteCount*sampleRate))
+				}
+				if net.Contains(record.sourceIP) {
+					transmitByteCounter.WithLabelValues(record.sourceIP.String(),collector).Add(float64(record.byteCount*sampleRate))
+				}
+			}
 			if debug {
-				log.Printf("[%s / %d] %s:%d (%d) -> %s:%d (%d)", protocol, record.ipTOS, record.sourceIP.String(), record.sourcePort, record.snmpInput, record.destIP.String(), record.destPort, record.snmpOutput)
+				log.Printf("%v [%s / %d] %s:%d (%d) -> %s:%d (%d)", addr, protocol, record.ipTOS, record.sourceIP.String(), record.sourcePort, record.snmpInput, record.destIP.String(), record.destPort, record.snmpOutput)
 			}
 		}
 	}
 }
 
+// Type for --monitor-networks arg.  Accepts comma-separated list of CIDR networks and stores them as []net.IPNet
+type NetsValue []net.IPNet
+func (i *NetsValue) String() string {
+  return fmt.Sprintf("%v", *i)
+}
+func (i *NetsValue) Set(value string) error {
+    nets := strings.Split(value, ",")
+    for _, item := range nets {
+        _, net, err := net.ParseCIDR(item)
+        if err != nil {
+            return err
+        }
+        *i = append(*i, *net)
+    }
+    return nil
+}
+
+var monitorNetworks NetsValue
+var sampleRate uint32
+
 func main() {
 	netflowAddress := flag.String("netflow-address", ":2055", "Address to listen on for Netflow UDP packets")
 	metricsAddress := flag.String("metrics-address", ":8888", "Address to listen on for Prometheus metrics")
+	srflag := flag.Uint("sample-rate", 1, "Sampling rate used on collectors. Byte counters will be multiplied by this")
+	flag.Var(&monitorNetworks, "monitor-networks", "Networks to generate per-IP metrics for. Comma-separates list of CIDR networks")
 	debug := flag.Bool("debug", false, "Print debug information")
 	flag.Parse()
+	sampleRate = uint32(*srflag) // store as uint32 to avoid frequent conversions
 
 	go listen(*netflowAddress, *debug)
 
-	prometheus.MustRegister(recordCounter, flowGauge, protocolPacketCounter, protocolByteCounter)
+	//prometheus.MustRegister(recordCounter, flowGauge, protocolPacketCounter, protocolByteCounter)
+	prometheus.MustRegister(recordCounter, flowGauge, receiveByteCounter, transmitByteCounter)
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		log.Fatal(http.ListenAndServe(*metricsAddress, nil))
