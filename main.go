@@ -52,13 +52,13 @@ var receiveByteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: metricsNamespace,
 	Name:      "receive_bytes_total",
 	Help:      "Number of bytes received per IP",
-}, []string{"ip","collector"})
+}, []string{"src","collector","dest"})
 
 var transmitByteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: metricsNamespace,
 	Name:      "transmit_bytes_total",
 	Help:      "Number of bytes sent per IP",
-}, []string{"ip","collector"})
+}, []string{"src","collector","dest"})
 
 // https://www.plixer.com/support/netflow-v5/
 type Flow struct {
@@ -211,10 +211,10 @@ func listen(address string, debug bool) {
 			*/
 			for _,net := range monitorNetworks {
 				if net.Contains(record.destIP) {
-					receiveByteCounter.WithLabelValues(record.destIP.String(),collector).Add(float64(record.byteCount*sampleRate))
+					receiveByteCounter.WithLabelValues(record.destIP.String(),collector,record.sourceIP.String()).Add(float64(record.byteCount*sampleRate))
 				}
 				if net.Contains(record.sourceIP) {
-					transmitByteCounter.WithLabelValues(record.sourceIP.String(),collector).Add(float64(record.byteCount*sampleRate))
+					transmitByteCounter.WithLabelValues(record.sourceIP.String(),collector,record.sourceIP.String()).Add(float64(record.byteCount*sampleRate))
 				}
 			}
 			if debug {
