@@ -214,7 +214,7 @@ func listen(address string, debug bool) {
 					receiveByteCounter.WithLabelValues(record.destIP.String(),collector,record.sourceIP.String()).Add(float64(record.byteCount*sampleRate))
 				}
 				if net.Contains(record.sourceIP) {
-					transmitByteCounter.WithLabelValues(record.sourceIP.String(),collector,record.sourceIP.String()).Add(float64(record.byteCount*sampleRate))
+					transmitByteCounter.WithLabelValues(record.sourceIP.String(),collector,record.destIP.String()).Add(float64(record.byteCount*sampleRate))
 				}
 			}
 			if debug {
